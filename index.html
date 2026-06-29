@@ -20,9 +20,11 @@
         if (row.score !== null && row.score !== undefined) state.scores[key] = row.score;
         if (row.justification) state.notes[key] = row.justification;
         if (row.interim) state.interimTexts[key] = row.interim;
-        if (row.year_l1 || row.year_l2 || row.year_l3) {
-          state.years[key] = { l1: row.year_l1||'', l2: row.year_l2||'', l3: row.year_l3||'' };
-        }
+        // Load level-year roadmap assignments into levelYears
+        // key format: "criteriaId-country-L1", "criteriaId-country-L2", "criteriaId-country-L3"
+        if (row.year_l1) { const y = parseInt(row.year_l1); if (y >= 2026 && y <= 2028) state.levelYears[`${row.criteria_id}-${row.country}-L1`] = y; }
+        if (row.year_l2) { const y = parseInt(row.year_l2); if (y >= 2026 && y <= 2028) state.levelYears[`${row.criteria_id}-${row.country}-L2`] = y; }
+        if (row.year_l3) { const y = parseInt(row.year_l3); if (y >= 2026 && y <= 2028) state.levelYears[`${row.criteria_id}-${row.country}-L3`] = y; }
       });
     }
 
@@ -31,11 +33,26 @@
       const { error } = await supa.from('scores').upsert({
         region, country, criteria_id: criteriaId, score,
         justification: justification||null,
-        year_l1: y1||null, year_l2: y2||null, year_l3: y3||null,
+        year_l1: y1 ? String(y1) : null,
+        year_l2: y2 ? String(y2) : null,
+        year_l3: y3 ? String(y3) : null,
         interim: interim||null,
         updated_at: new Date().toISOString()
       }, { onConflict: 'region,country,criteria_id' });
       if (error) console.error('Supabase save error:', error);
+    }
+
+    // Save level-year assignment for a specific country+level
+    async function supaSetLevelYear(region, country, criteriaId, l1, l2, l3, interim) {
+      const { error } = await supa.from('scores').upsert({
+        region, country, criteria_id: criteriaId,
+        year_l1: l1 ? String(l1) : null,
+        year_l2: l2 ? String(l2) : null,
+        year_l3: l3 ? String(l3) : null,
+        interim: interim||null,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'region,country,criteria_id' });
+      if (error) console.error('Supabase levelYear save error:', error);
     }
   </script>
 
@@ -2519,6 +2536,14 @@ function setLevelYear(cid, co, lvl, yr) {
   var k = cid+'-'+co+'-L'+lvl;
   if (yr === null) { delete levelYears[k]; }
   else { levelYears[k] = yr; }
+  // Persist all 3 levels for this criteria+country to Supabase
+  var l1 = levelYears[cid+'-'+co+'-L1'] || null;
+  var l2 = levelYears[cid+'-'+co+'-L2'] || null;
+  var l3 = levelYears[cid+'-'+co+'-L3'] || null;
+  var interim = (typeof interimTexts !== 'undefined') ? (interimTexts[cid+'-'+co]||null) : null;
+  if (typeof supaSetLevelYear === 'function') {
+    supaSetLevelYear(activeRegion, co, cid, l1, l2, l3, interim);
+  }
 }
 
 function getYear(cid, co) {
@@ -2812,11 +2837,13 @@ function setScore(criterionId, country, val) {
   renderSidebar();
   // Persist to Supabase
   const nk = `${criterionId}-${country}`;
-  const yr = (typeof years !== 'undefined' && years[nk]) ? years[nk] : {};
+  const l1 = levelYears[criterionId+'-'+country+'-L1'] || null;
+  const l2 = levelYears[criterionId+'-'+country+'-L2'] || null;
+  const l3 = levelYears[criterionId+'-'+country+'-L3'] || null;
   supaSave(
     activeRegion, country, criterionId, val,
     notes[nk]||null,
-    yr.l1||null, yr.l2||null, yr.l3||null,
+    l1, l2, l3,
     (typeof interimTexts !== 'undefined') ? (interimTexts[nk]||null) : null
   );
 }
