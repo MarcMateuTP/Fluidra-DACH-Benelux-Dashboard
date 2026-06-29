@@ -1,6 +1,44 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- Supabase -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+    const SUPA_URL = 'https://yrvbotanvurngqrdebhy.supabase.co';
+    const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlydmJvdGFudnVybmdxcmRlYmh5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI3Mzk0NDYsImV4cCI6MjA5ODMxNTQ0Nn0.56s9XkFBt36B2Yy9iwe3rPcWYFoKAEzejmYvQGudxU0';
+    const supa = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+    // Load all scores for a region from Supabase into the local state object
+    async function supaLoadRegion(region, state) {
+      const { data, error } = await supa
+        .from('scores')
+        .select('country,criteria_id,score,justification,year_l1,year_l2,year_l3,interim')
+        .eq('region', region);
+      if (error) { console.error('Supabase load error:', error); return; }
+      data.forEach(row => {
+        const key = `${row.criteria_id}-${row.country}`;
+        if (row.score !== null && row.score !== undefined) state.scores[key] = row.score;
+        if (row.justification) state.notes[key] = row.justification;
+        if (row.interim) state.interimTexts[key] = row.interim;
+        if (row.year_l1 || row.year_l2 || row.year_l3) {
+          state.years[key] = { l1: row.year_l1||'', l2: row.year_l2||'', l3: row.year_l3||'' };
+        }
+      });
+    }
+
+    // Upsert a single score row on every change
+    async function supaSave(region, country, criteriaId, score, justification, y1, y2, y3, interim) {
+      const { error } = await supa.from('scores').upsert({
+        region, country, criteria_id: criteriaId, score,
+        justification: justification||null,
+        year_l1: y1||null, year_l2: y2||null, year_l3: y3||null,
+        interim: interim||null,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'region,country,criteria_id' });
+      if (error) console.error('Supabase save error:', error);
+    }
+  </script>
+
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Fluidra DACH & Benelux — Commercial Maturity Assessment</title>
@@ -2299,6 +2337,26 @@ let countryFilter  = "DACH";
 let radarChart     = null;
 var roadmapCountry = "DE";
 
+// ── Supabase boot: load both regions then render ─────────────────────────────
+(async function() {
+  try {
+    await Promise.all([
+      supaLoadRegion('DACH',    regionState.DACH),
+      supaLoadRegion('BENELUX', regionState.BENELUX)
+    ]);
+  } catch(e) { console.warn('Supabase boot failed, using local state:', e); }
+  // Re-sync active pointers after load
+  scores       = regionState[activeRegion].scores;
+  notes        = regionState[activeRegion].notes;
+  insightTexts = regionState[activeRegion].insightTexts;
+  infra        = regionState[activeRegion].infra;
+  years        = regionState[activeRegion].years;
+  levelYears   = regionState[activeRegion].levelYears;
+  interimTexts = regionState[activeRegion].interimTexts;
+  if (typeof render === 'function') render();
+  if (typeof updateProgress === 'function') updateProgress();
+})();
+
 // ── Region switch ─────────────────────────────────────────────────────────────
 function switchRegion(region) {
   if (region === activeRegion) return;
@@ -2752,6 +2810,15 @@ function setScore(criterionId, country, val) {
   scores[`${criterionId}-${country}`] = val;
   updateProgress();
   renderSidebar();
+  // Persist to Supabase
+  const nk = `${criterionId}-${country}`;
+  const yr = (typeof years !== 'undefined' && years[nk]) ? years[nk] : {};
+  supaSave(
+    activeRegion, country, criterionId, val,
+    notes[nk]||null,
+    yr.l1||null, yr.l2||null, yr.l3||null,
+    (typeof interimTexts !== 'undefined') ? (interimTexts[nk]||null) : null
+  );
 }
 
 function getNote(criterionId, country) {
@@ -2993,6 +3060,7 @@ function selectScore(criterionId, country, val, el) {
     updateProgress();
     renderSidebar();
     refreshLDTable(criterionId);
+    supaSave(activeRegion, country, criterionId, null, notes[`${criterionId}-${country}`]||null, null, null, null, null);
     return;
   }
   setScore(criterionId, country, val);
